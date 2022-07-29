@@ -1,0 +1,414 @@
+---
+title: "ColR_paper_RNAseq_analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## install packages
+BiocManager::install("tximport", force = TRUE)
+BiocManager::install("readr", force = TRUE)
+BiocManager::install("tximportData", force = TRUE)
+BiocManager::install("apeglm", force = TRUE)
+BiocManager::install("DESeq2", force = TRUE)
+BiocManager::install("remotes", force = TRUE)
+BiocManager::install("dittoSeq", force = TRUE)
+BiocManager::install("dplyr", force = TRUE)
+BiocManager::install("ggplot2", force = TRUE)
+BiocManager::install("GOfuncR", force = TRUE)
+
+## load packages
+library("tximport")
+library("readr")
+library("tximportData")
+library("apeglm")
+library("DESeq2")
+library("remotes")
+library("dittoSeq")
+library("dplyr")
+library("ggplot2")
+library("GOfuncR")
+
+setwd("/Users/christinawiesmann/colR_RNAseq/PAO1")
+
+# metadata # these are the folder names which we will use later ##
+genotype <- c("wt","wt","wt","DcolR","DcolR","DcolR","wt","wt","wt","DcolR","DcolR","DcolR")
+condition <- c("plant","plant","plant","plant","plant","plant","M9","M9","M9","M9","M9","M9")
+run <- c("1PWT1DD","2PWT23","3PWT3","4PcolR1DD","5PcolR13","6PcolR3DD","7MWT23","8MWT2DD","9MWT3DD","10McolR1DD","11McolR13","12McolR3DD")
+
+colR_metadata <- data.frame(genotype, condition, run)
+
+# names of the folders containing the quant.sf files
+folders <- paste0(colR_metadata$run,"_quant")
+
+files <- file.path ("/Users/christinawiesmann/colR_RNAseq/PAO1", folders, "quant.sf")
+
+# name all the files with metadaname and run name#
+names(files) <- colR_metadata$run
+
+## make tx2gene dataframe with transcriptID and geneID ##
+PAO1_genes <- read.csv("PAO1_genes.csv")
+transcriptID <- PAO1_genes$PGD_Gene_ID
+geneID <- PAO1_genes$locus_tag
+tx2gene <- data.frame(transcriptID, geneID)
+
+
+## merge tx2gene file with salmon output files (gene expression) ##
+txi <- tximport(files, type="salmon", tx2gene=tx2gene)
+
+ddsTxi <- DESeqDataSetFromTximport(txi, colData = colR_metadata, design = ~ genotype + condition + genotype:condition)
+
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+
+dds <- DESeq(ddsTxi)
+res <- results(dds)
+
+#### analysis #####
+
+### First make PCA plot ###
+
+# make vsd object then make PCa plot #
+vsd <- vst(dds, blind = FALSE)
+plotPCA(vsd, intgroup=c("genotype", "condition"))
+
+## get normalized counts for expression of each gene in each sample/condition ##
+
+PAO1_normalcounts <- assay(ddsTxi)
+
+##### DESeq2 #########
+
+ddsTxi <- DESeqDataSetFromTximport(txi, colData = colR_metadata, design = ~ genotype + condition + genotype:condition)
+
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+
+## make all the comparisong relative to M9 and wt ##
+ddsTxi$condition <- relevel(ddsTxi$condition, ref = "M9")
+ddsTxi$genotype <- relevel(ddsTxi$genotype, ref = "wt")
+
+## make new dds, res, and dataframes with M9 and wt as reference conditions ###
+dds <- DESeq(ddsTxi)
+res <- results(dds)
+resdataframe_original <- as.data.frame(res)
+
+## order dataframe with expression values relative to M9 and wt by p-value and convert it to a dataframe and csv file (optional)##
+resordered <- res[order(res$pvalue),]
+summary(res)
+resdataframe <- as.data.frame(resordered)
+#write.csv(resdataframe, "colR_genotype_condition.csv")
+
+###### two comparisons for avoce res #######
+# 1.   compare between plant and M9 in wt
+# get list of possible compatison 
+resultsNames(dds)
+# Set it so we look at expression of wt in the rhizosphere vs. M9, sort by pvalue and make into dataframe ##
+resWTcondition <- results(dds, contrast=c("condition", "plant", "M9"))
+resWTCondition_lfc <- lfcShrink(dds, coef="condition_plant_vs_M9", type="apeglm")
+resWTCondition_lfc_o <- resWTCondition_lfc[order(resWTCondition_lfc$pvalue),]
+resWTCondition_lfc_df <- as.data.frame(resWTCondition_lfc_o)
+
+## filter for genes with a log 2 Fold Chnange > 0.585 and a padj value of less than 0.1 ##
+write.csv(resWTCondition_lfc_df, "wt_condition_lfc_df.csv")
+resWTCondition_lfc_df<- read.csv("wt_condition_lfc_df.csv")
+resWTCondition_lfc_sig <- filter(resWTCondition_lfc_df, log2FoldChange > 0.585 & padj < 0.1) 
+
+## merge output file with log2FC values with normalcounts ##
+write.csv(PAO1_normalcounts, "PAO1_normalcounts.csv")
+PAO1_normalcounts <- read.csv("PAO1_normalcounts.csv")
+resWTCondition_lfc_normalcounts_sig <- merge(resWTCondition_lfc_sig, PAO1_normalcounts)
+write.csv(resWTCondition_lfc_normalcounts_sig, "resWTCondition_lfc_normalcounts_sig.csv")
+
+
+
+# 2.   compare between wt and colR in M9## Repeat above except now looking at ∆colR vs. wildtype in M9 ##
+resMFgenotype <- results(dds, contrast=c("genotype", "DcolR", "wt"))
+resgenotype_lfc <- lfcShrink(dds, coef="genotype_DcolR_vs_wt", type="apeglm")
+resgenotype_lfc_o <- resgenotype_lfc[order(resgenotype_lfc$padj),]
+resgenotype_lfc_df <- as.data.frame(resgenotype_lfc_o)
+
+write.csv(resgenotype_lfc_df, "M9_genotype_lfc.csv")
+M9_genotype_lfc <- read.csv("M9_genotype_lfc.csv")
+M9_genotype_lfc_sig <- filter(M9_genotype_lfc, log2FoldChange < -0.585 & padj < 0.1) #more than 1.1 fold upregulated
+resgenotype_normalcounts_sig <- merge(M9_genotype_lfc_sig, PAO1_normalcounts)
+write.csv(resgenotype_normalcounts_sig, "resgenotype_normalcounts_sig.csv")##colR vs. WT in M9####
+
+
+# 3.  compare wt and colR gene expression in just the plant
+
+## Change the comparison so now we're comparing expression relative to the plant condition and to the wt genotype##
+ddsTxi$condition <- relevel(ddsTxi$condition, ref = "plant")
+ddsTxi$genotype <- relevel(ddsTxi$genotype, ref = "wt")
+
+dds <- DESeq(ddsTxi)
+res <- results(dds)
+resdataframe_original <- as.data.frame(res)
+
+resultsNames(dds)
+
+res_plant <- results(dds, contrast=c("genotype","DcolR","wt"))
+res_plant_lfc <- lfcShrink(dds, coef="genotype_DcolR_vs_wt", type="apeglm")
+res_plant_lfc_ordered <- res_plant_lfc[order(res_plant_lfc$pvalue),]
+res_plant_lfc_dataframe <- as.data.frame(res_plant_lfc_ordered)
+write.csv(res_plant_lfc_dataframe, "res_plant_lfc_dataframe.csv")
+res_PDW_lfc <- read.csv("res_plant_lfc_dataframe.csv")
+write.csv(res_PDW_lfc, "PDW_lfc.csv")
+
+## significantly higher WT expression than colR in the plant###
+res_PDW_dataframe_sig <- filter(res_PDW_lfc, log2FoldChange < -0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_PDW_lfc_dataframe_sig <- merge(res_PDW_dataframe_sig, PAO1_normalcounts)
+write.csv(res_PDW_lfc_dataframe_sig, "res_PDW_lfc_dataframe_sig")
+
+########## 4.  
+
+resultsNames(dds)
+## higher expression of WT bacteria in the rhizosphere vs. M9 ##
+res_plant <- results(dds_plant, contrast=c("condition","M9","plant"))
+res_WMP_lfc <- lfcShrink(dds_plant, coef="condition_M9_vs_plant", type="apeglm")
+res_WMP_lfc_ordered <- res_WMP_lfc[order(res_WMP_lfc$pvalue),]
+res_WMP_lfc_dataframe <- as.data.frame(res_WMP_lfc_ordered)
+write.csv(res_plant_lfc_dataframe, "res_plant_lfc_dataframe.csv")
+res_wtplant_lfc <- read.csv("res_plant_lfc_dataframe.csv")
+write.csv(res_plant_lfc_dataframe, "plant_genotype_lfc.csv")
+
+res_wtplant_lfc_dataframe_sig <- filter(res_wtplant_lfc, log2FoldChange > 0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_wtplant_lfc_dataframe_sig <- merge(res_wtplant_lfc_dataframe_sig, PAO1_normalcounts)
+write.csv(res_wtplant_lfc_dataframe_sig, "res_wtplant_lfc_dataframe_sig") 
+
+
+###################### MORE LISTS #######################
+## 5. Change the comparison so now we're comparing expression relative to the plant condition and to the DcolR genotype ##
+ddsTxi <- DESeqDataSetFromTximport(txi, colData = colR_metadata, design = ~ genotype + condition + genotype:condition)
+
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+
+ddsTxi$condition <- relevel(ddsTxi$condition, ref = "plant")
+ddsTxi$genotype <- relevel(ddsTxi$genotype, ref = "DcolR")
+
+
+dds <- DESeq(ddsTxi)
+res <- results(dds)
+resdataframe_original <- as.data.frame(res)
+
+resordered <- res[order(res$pvalue),]
+summary(res)
+resdataframe <- as.data.frame(resordered)
+resultsNames(dds)
+
+##higher colR expression in plant than M9##
+resDMPcondition <- results(dds, contrast=c("condition", "M9", "plant"))
+res_DMP_lfc <- lfcShrink(dds, coef="condition_M9_vs_plant", type="apeglm")
+res_DMP_lfc_ordered <- res_DMP_lfc[order(res_DMP_lfc$pvalue),]
+res_DMP_lfc_dataframe <- as.data.frame(res_DMP_lfc_ordered)
+write.csv(res_DMP_lfc_dataframe, "res_DMP_lfc_dataframe.csv")
+res_DMP_lfc <- read.csv("res_DMP_lfc_dataframe.csv")
+write.csv(res_DMP_lfc_dataframe, "media_DMP_lfc.csv")
+
+res_DMP_lfc_dataframe_sig <- filter(res_DMP_lfc, log2FoldChange > 0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_DMP_lfc_dataframe_sig <- merge(res_DMP_lfc_dataframe_sig, PAO1_normalcounts)
+write.csv(res_DMP_lfc_dataframe_sig, "res_DMP_lfc_dataframe_sig") 
+
+
+### more ### 6. 
+
+resultsNames(dds)
+res_colR <- results(dds_colR, contrast=c("genotype", "wt", "DcolR"))
+resultsNames(dds)
+res_PWD_lfc <- lfcShrink(dds, coef="genotype_wt_vs_DcolR", type="apeglm")
+res_PWD_lfc_ordered <- res_PWD_lfc[order(res_PWD_lfc$pvalue),]
+res_PWD_lfc_dataframe <- as.data.frame(res_PWD_lfc_ordered)
+write.csv(res_PWD_lfc_dataframe, "res_PWD_lfc_dataframe.csv")
+res_PWD_lfc <- read.csv("res_PWD_lfc_dataframe.csv")
+write.csv(res_PWD_lfc, "PWD_genotype_lfc.csv")
+
+res_PWD_lfc_dataframe_sig <- filter(res_PWD_lfc, log2FoldChange > 0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_PWD_lfc_dataframe_sig <- merge(res_PWD_lfc_dataframe_sig, PAO1_normalcounts) ## wt vs. colR in plant ()
+write.csv(res_PWD_lfc_dataframe_sig, "res_PWD_lfc_dataframe_sig") ##
+
+
+##### 7. ####
+ddsTxi <- DESeqDataSetFromTximport(txi, colData = colR_metadata, design = ~ genotype + condition + genotype:condition)
+
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+
+ddsTxi$condition <- relevel(ddsTxi$condition, ref = "M9")
+ddsTxi$genotype <- relevel(ddsTxi$genotype, ref = "DcolR")
+
+
+dds <- DESeq(ddsTxi)
+res <- results(dds)
+resdataframe_original <- as.data.frame(res)
+
+resordered <- res[order(res$pvalue),]
+summary(res)
+resdataframe <- as.data.frame(resordered)
+resultsNames(dds)
+
+resDPMcondition <- results(dds, contrast=c("condition", "plant", "M9"))
+res_DPM_lfc <- lfcShrink(dds, coef="condition_plant_vs_M9", type="apeglm")
+res_DPM_lfc_ordered <- res_DPM_lfc[order(res_DPM_lfc$pvalue),]
+res_DPM_lfc_dataframe <- as.data.frame(res_DPM_lfc_ordered)
+write.csv(res_DPM_lfc_dataframe, "res_DPM_lfc_dataframe.csv")
+res_DPM_lfc <- read.csv("res_DPM_lfc_dataframe.csv")
+write.csv(res_DPM_lfc_dataframe, "media_DPM_lfc.csv")
+
+res_DPM_lfc_dataframe_sig <- filter(res_DPM_lfc, log2FoldChange > 0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_DPM_lfc_dataframe_sig <- merge(res_DPM_lfc_dataframe_sig, PAO1_normalcounts)
+write.csv(res_DPM_lfc_dataframe_sig, "res_DPM_lfc_dataframe_sig") ##higher colR expression in plant than M9##
+
+########## 8! #########
+resMWDcondition <- results(dds, contrast=c("genotype", "wt", "DcolR"))
+res_MWD_lfc <- lfcShrink(dds, coef="genotype_wt_vs_DcolR", type="apeglm")
+res_MWD_lfc_ordered <- res_MWD_lfc[order(res_MWD_lfc$pvalue),]
+res_MWD_lfc_dataframe <- as.data.frame(res_MWD_lfc_ordered)
+write.csv(res_MWD_lfc_dataframe, "res_MWD_lfc_dataframe.csv")
+res_MWD_lfc <- read.csv("res_MWD_lfc_dataframe.csv")
+write.csv(res_MWD_lfc_dataframe, "media_MWD_lfc.csv")
+
+res_MWD_lfc_dataframe_sig <- filter(res_MWD_lfc, log2FoldChange > 0.585 & padj < 0.1) #more than 1.1 fold upregulated
+res_MWD_lfc_dataframe_sig <- merge(res_MWD_lfc_dataframe_sig, PAO1_normalcounts)
+write.csv(res_MWD_lfc_dataframe_sig, "res_MWD_lfc_dataframe_sig") ##higher colR expression in plant than M9##
+
+
+
+## merge gene expression normalcounts with GO terms ## GO terms in this case can be obtained from Pseduomonas.com ##
+PWPM <- read.csv("resWTCondition_lfc_normalcounts_sig.csv")
+PAO1onlyGO <- read.csv("PAO1onlyGO.csv")
+PWPMGOterms <- merge(PWPM, PAO1onlyGO)
+write.csv(PWPMGOterms, "PWPMGOterms.csv")
+
+res_PDPM <- read.csv("res_DPM_lfc_dataframe_sig")
+PDPMGOterms <- merge(res_PDPM, PAO1onlyGO)
+write.csv(PDPMGOterms, "PDPMGOterms.csv")
+
+
+# find number of overlapping genes ## 
+condition_up <- Reduce(intersect, list(geneWt_up, geneColR_up))
+condition_down <- Reduce(intersect, list(geneWt_down, geneColR_down))
+
+# find number of overlapping genes  ## 
+genotype_up <- Reduce(intersect, list(geneM9_up, genePlant_up))
+genotype_down <- Reduce(intersect, list(geneM9_down, genePlant_down))
+
+
+### GO analysis ###
+PAO1_allGOterms <- read.csv("gene_ontology_csv.csv")
+PAO1_allGOterms_dataframe <- as.data.frame(PAO1_allGOterms)
+PAO1onlyGO <- read.csv("PAO1onlyGO.csv", header = TRUE)
+PAO1_onlyGO <-  data.frame(PAO1onlyGO)
+
+
+## make table with just the gene, or locus tag, for each gene, and its go ID $$
+GOcsv <- read.csv("PAO1onlyGO.csv")
+gene <- GOcsv$X
+go_id <- GOcsv$Accession
+GO_annotations <- data.frame(gene, go_id)
+
+# background genes. These are all of the genes with assigned GO terms ##
+bg_gene_ids <- as.character(PAO1_genes$locus_tag)
+plantup_gene_ids <- as.character(resWTCondition_lfc_sig$X)
+PAO1_normalcounts_df <- as.data.frame(PAO1_normalcounts)
+resWTCondition_lfc_sig_df <- as.data.frame(resWTCondition_lfc_sig)
+PAO1_filtered_normalcounts <- subset(PAO1_normalcounts_df, X %in% resWTCondition_lfc_sig_df$X)
+
+# subtract candidate genes from background genes
+bg_genePlant_up <- setdiff(bg_gene_ids, plantup_gene_ids)
+
+# set 1 or 0 for candidate or background genes, respectively #
+is_candidate_1 = c(rep(1,length(plantup_gene_ids)), rep(0,length(bg_genePlant_up)))
+
+input_hyper_plant_up = data.frame(gene_ids = c(plantup_gene_ids, bg_genePlant_up), is_candidate_1)
+
+# run go enrich
+res_hyper_plant_up <- go_enrich(input_hyper_plant_up, annotations = GO_annotations, n_randset = 1000)
+
+# refine results (implements elim algorithm, removes genes from significant child categories and repeats test to check if category is still signficant)
+refined_plant_up <- refine(res_hyper_plant_up, fwer = 0.1, annotations = GO_annotations)
+write.csv(refined_plant_up, "P_refined_plant_up.csv")
+
+
+## merge list of filtered normalcounts with GO terms to get table with both ##
+PAO1normalcounts_filtered <- read.csv("PAO1normalcounts_filtered.csv")
+PAO1normalcounts_filtered_GO_2 <- merge(PAO1_onlyGO, PAO1normalcounts_filtered)
+write.csv(PAO1normalcounts_filtered_GO_2, "PAO1normalcounts_filtered_GO_2.csv")
+PAO1normalcounts_filtered_GO_2 <- read.csv("PAO1normalcounts_filtered_GO_2.csv")
+PAO1normalcounts_filtered_GO_2_dataframe <- as.data.frame(PAO1normalcounts_filtered_GO_2)
+
+## now we have a list of the parent GO terms for all the significant GO categories so we're finding all the child terms ##
+GO0055114childnodes <- get_child_nodes('GO:0055114')
+PAO1normalcounts_filtered_GO_2_dataframe <- as.data.frame(PAO1_filtered_normalcounts)
+GO0055114filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0055114childnodes$child_go_id)
+write.csv(GO0055114filtered_P, "GO0055114filtered_P.csv")
+
+GO0015976childnodes <- get_child_nodes('GO:0015976')
+GO0015976filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0015976childnodes$child_go_id)
+write.csv(GO0015976filtered_P, "GO0015976filtered_P.csv")
+
+GO0016491childnodes <- get_child_nodes('GO:0016491')
+GO0016491filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0016491childnodes$child_go_id)
+write.csv(GO0016491filtered_P, "GO0016491filtered_P.csv")
+
+GO0019634childnodes <- get_child_nodes('GO:0019634')
+GO0019634filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0019634childnodes$child_go_id)
+write.csv(GO0019634filtered_P, "GO0019634filtered_P.csv")
+
+GO0005887childnodes <- get_child_nodes('GO:0005887')
+GO0005887filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0005887childnodes$child_go_id)
+write.csv(GO0005887filtered_P, "GO0005887filtered_P.csv")
+
+GO0046872childnodes <- get_child_nodes('GO:0046872')
+GO0046872filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0046872childnodes$child_go_id)
+write.csv(GO0046872filtered_P, "GO0046872filtered_P.csv")
+
+GO1901760childnodes <- get_child_nodes('GO:1901760')
+GO1901760filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO1901760childnodes$child_go_id)
+write.csv(GO1901760filtered_P, "GO1901760filtered_P.csv")
+
+GO0043546childnodes <- get_child_nodes('GO:0043546')
+GO0043546filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0043546childnodes$child_go_id)
+write.csv(GO0043546filtered_P, "GO0043546filtered_P.csv")
+
+GO0009056childnodes <- get_child_nodes('GO:0009056')
+GO0009056filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0009056childnodes$child_go_id)
+write.csv(GO0009056filtered_P, "GO0009056filtered_P.csv")
+
+GO0042126childnodes <- get_child_nodes('GO:0042126')
+GO0042126filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0042126childnodes$child_go_id)
+write.csv(GO0042126filtered_P, "GO0042126filtered_P.csv")
+
+GO0051536childnodes <- get_child_nodes('GO:0051536')
+GO0051536filtered_P <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0051536childnodes$child_go_id)
+write.csv(GO0051536filtered_P, "GO0051536filtered_P.csv")
+
+GO0051540childnodes <- get_child_nodes('GO:0051540')
+GO0051540filtered_PA <- filter(PAO1normalcounts_filtered_GO_2_dataframe, Accession %in% GO0051540childnodes$child_go_id)
+write.csv(GO0051540filtered_PA, "GO0051540filtered_PA.csv")
+
+
+
+## make list with just locus tag (GO term) and gene name and product name ###
+keeps <- c("Locus.Tag","Gene.Name","Product.Name")
+Pseudomonas_aeruginosa_PAO1_107 <- read.csv("Pseudomonas_aeruginosa_PAO1_107.csv", header = TRUE)
+genenamesonly = Pseudomonas_aeruginosa_PAO1_107[keeps]
+write.csv(genenamesonly, "genenamesonly.csv")
+genenamesonly <- read.csv("genenamesonly.csv")
+
+## now make list with Locus.Tag. Gene.Name. Product.Name, and all of the data that was in res_PWD_lfc_dataframe_sig ##
+res_PWD_lfc_dataframe_sig <- read.csv("res_PWD_lfc_dataframe_sig.csv", header = TRUE)
+PWD_geneannotations <- merge(genenamesonly, res_PWD_lfc_dataframe_sig)
+write.csv(PWD_geneannotations, "PWD_geneannotations.csv")
+
+# do the same as above for res_MWD_lfc_dataframe_sig.csv #
+res_MWD_lfc_dataframe_sig <- read.csv("res_MWD_lfc_dataframe_sig.csv")
+MWD_geneannotations <- merge(genenamesonly, res_MWD_lfc_dataframe_sig)
+write.csv(MWD_geneannotations, "MWD_geneannotations.csv")
+
+# do the same as above for all of the genes #
+PAO1_normalcounts <- read.csv("PAO1_normalcounts.csv")
+PAO1allgenesnotmalcounts_geneannotations <- merge(genenamesonly, PAO1_normalcounts)
+write.csv(PAO1allgenesnotmalcounts_geneannotations, "PAO1genesnotmalcounts_geneannotations.csv")
