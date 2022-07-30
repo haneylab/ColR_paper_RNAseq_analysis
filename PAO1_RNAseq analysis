@@ -71,7 +71,7 @@ res <- results(dds)
 
 ### First make PCA plot ###
 
-# make vsd object then make PCa plot #
+# make vsd object then make PCA plot #
 vsd <- vst(dds, blind = FALSE)
 plotPCA(vsd, intgroup=c("genotype", "condition"))
 
@@ -86,7 +86,7 @@ ddsTxi <- DESeqDataSetFromTximport(txi, colData = colR_metadata, design = ~ geno
 keep <- rowSums(counts(ddsTxi)) >= 10
 ddsTxi <- ddsTxi[keep,]
 
-## make all the comparisong relative to M9 and wt ##
+## make all the comparisona relative to M9 and wt ##
 ddsTxi$condition <- relevel(ddsTxi$condition, ref = "M9")
 ddsTxi$genotype <- relevel(ddsTxi$genotype, ref = "wt")
 
@@ -101,9 +101,9 @@ summary(res)
 resdataframe <- as.data.frame(resordered)
 #write.csv(resdataframe, "colR_genotype_condition.csv")
 
-###### two comparisons for avoce res #######
+###### two comparisons for above res #######
 # 1.   compare between plant and M9 in wt
-# get list of possible compatison 
+# get list of possible comparisons
 resultsNames(dds)
 # Set it so we look at expression of wt in the rhizosphere vs. M9, sort by pvalue and make into dataframe ##
 resWTcondition <- results(dds, contrast=c("condition", "plant", "M9"))
